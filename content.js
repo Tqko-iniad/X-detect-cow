@@ -7,6 +7,10 @@
   };
 
   const NOTICE_ID = "x-ushi-notifier-toast";
+  const TOKEN_READING_CANDIDATES = {
+    右: ["ウ", "ミギ"]
+  };
+
   const trackedInputs = new WeakMap();
   let settings = { ...DEFAULT_SETTINGS };
   let lastNotifyAt = 0;
@@ -158,13 +162,52 @@
     }
   }
 
+  function getReadingCandidates(text) {
+    if (!tokenizerReady || !tokenizer) {
+      return [];
+    }
+
+    try {
+      const tokens = tokenizer.tokenize(text);
+      const candidates = tokens.reduce(
+        (acc, token) => {
+          const surface = token.surface_form || "";
+          const defaultReading =
+            token.reading && token.reading !== "*" ? token.reading : surface;
+          const readings = TOKEN_READING_CANDIDATES[surface] || [defaultReading];
+          const next = [];
+
+          for (const prefix of acc) {
+            for (const reading of readings) {
+              next.push(`${prefix}${reading}`);
+            }
+          }
+
+          return next.slice(0, 16);
+        },
+        [""]
+      );
+
+      return candidates.filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   function buildSearchText(text) {
     const reading = getReading(text);
+    const readingCandidates = getReadingCandidates(text);
+    const allReadings = [reading, ...readingCandidates]
+      .filter(Boolean)
+      .filter((value, index, values) => values.indexOf(value) === index);
+
     return [
       normalizeText(text),
       toRomaji(text),
-      normalizeText(reading),
-      toRomaji(reading)
+      ...allReadings.flatMap((candidate) => [
+        normalizeText(candidate),
+        toRomaji(candidate)
+      ])
     ]
       .filter(Boolean)
       .join("\n");
@@ -184,27 +227,33 @@
     const requestId = ++aiRequestId;
     aiTimer = window.setTimeout(() => {
       try {
-        const response = chrome.runtime.sendMessage({
-          type: "AI_DETECT_REQUEST",
-          text
-        });
+        chrome.runtime.sendMessage(
+          {
+            type: "AI_DETECT_REQUEST",
+            text,
+            localSearchText: buildSearchText(text)
+          },
+          (payload) => {
+            if (chrome.runtime.lastError) {
+              return;
+            }
 
-        response?.then?.((payload) => {
-          if (requestId !== aiRequestId || !payload?.ok || !payload.result?.match) {
-            return;
+            if (requestId !== aiRequestId || !payload?.ok || !payload.result?.match) {
+              return;
+            }
+
+            const matchedKeyword = payload.result.keyword || settings.keywords[0];
+            const previousMatchedKeyword = trackedInputs.get(element);
+            if (`ai:${matchedKeyword}` === previousMatchedKeyword) {
+              return;
+            }
+
+            trackedInputs.set(element, `ai:${matchedKeyword}`);
+            settings.lastMatchedKeyword = matchedKeyword;
+            settings.lastMatchSource = "ai";
+            notify();
           }
-
-          const matchedKeyword = payload.result.keyword || settings.keywords[0];
-          const previousMatchedKeyword = trackedInputs.get(element);
-          if (`ai:${matchedKeyword}` === previousMatchedKeyword) {
-            return;
-          }
-
-          trackedInputs.set(element, `ai:${matchedKeyword}`);
-          settings.lastMatchedKeyword = matchedKeyword;
-          settings.lastMatchSource = "ai";
-          notify();
-        });
+        );
       } catch {
         // Local detection remains active when extension messaging is unavailable.
       }

@@ -6,6 +6,7 @@ const DEFAULT_SETTINGS = {
 
 const INIAD_CHAT_COMPLETIONS_URL =
   "https://api.openai.iniad.org/api/v1/chat/completions";
+const AI_TIMEOUT_MS = 12000;
 
 function getStorage(area, keys) {
   return new Promise((resolve) => {
@@ -13,18 +14,24 @@ function getStorage(area, keys) {
   });
 }
 
-function createAiPrompt(text, keywords) {
+function createAiPrompt(text, keywords, localSearchText) {
   return [
     {
       role: "system",
       content:
-        "You are a strict Japanese text detector. Decide whether the user's text contains any target keyword directly, in kana, kanji reading, romanized Japanese reading, or a plausible Japanese reading. Return only compact JSON with keys match, keyword, reason. Do not include markdown."
+        [
+          "You are a strict Japanese reading detector.",
+          "Decide whether the user's Japanese text contains any target keyword directly, in kana, kanji reading, romanized Japanese reading, or a plausible compound-word reading.",
+          "Important examples: 右心房 is read as うしんぼう / ushinbou, so it contains ushi. 相思相愛 is read as そうしそうあい / soushisouai, so it contains ushi.",
+          "Return only compact JSON with keys match, keyword, reading, reason. Do not include markdown."
+        ].join(" ")
     },
     {
       role: "user",
       content: JSON.stringify({
         targetKeywords: keywords,
-        text
+        text,
+        localSearchText
       })
     }
   ];
@@ -39,8 +46,9 @@ function parseAiResponse(content) {
   try {
     const parsed = JSON.parse(jsonText);
     return {
-      match: parsed.match === true,
+      match: parsed.match === true || parsed.match === "true",
       keyword: typeof parsed.keyword === "string" ? parsed.keyword : "",
+      reading: typeof parsed.reading === "string" ? parsed.reading : "",
       reason: typeof parsed.reason === "string" ? parsed.reason : ""
     };
   } catch {
@@ -48,7 +56,7 @@ function parseAiResponse(content) {
   }
 }
 
-async function runAiDetection(text) {
+async function runAiDetection(text, localSearchText) {
   const [syncSettings, localSettings] = await Promise.all([
     getStorage("sync", DEFAULT_SETTINGS),
     getStorage("local", { iniadApiKey: "" })
@@ -63,19 +71,32 @@ async function runAiDetection(text) {
     return { match: false, keyword: "", reason: "" };
   }
 
-  const response = await fetch(INIAD_CHAT_COMPLETIONS_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: syncSettings.aiModel || DEFAULT_SETTINGS.aiModel,
-      messages: createAiPrompt(text.slice(0, 1000), keywords),
-      stream: false,
-      max_completion_tokens: 80
-    })
-  });
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), AI_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(INIAD_CHAT_COMPLETIONS_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      signal: abortController.signal,
+      body: JSON.stringify({
+        model: syncSettings.aiModel || DEFAULT_SETTINGS.aiModel,
+        messages: createAiPrompt(
+          text.slice(0, 1000),
+          keywords,
+          String(localSearchText || "").slice(0, 2000)
+        ),
+        stream: false,
+        max_completion_tokens: 120
+      })
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -89,7 +110,10 @@ async function runAiDetection(text) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== "USHI_DETECTED") {
     if (message?.type === "AI_DETECT_REQUEST") {
-      runAiDetection(String(message.text || ""))
+      runAiDetection(
+        String(message.text || ""),
+        String(message.localSearchText || "")
+      )
         .then((result) => sendResponse({ ok: true, result }))
         .catch((error) =>
           sendResponse({

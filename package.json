@@ -1,6 +1,6 @@
 {
   "name": "x-keyword-notifier",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Browser extension that notifies you when a configured keyword is typed into the X post composer.",
   "scripts": {
