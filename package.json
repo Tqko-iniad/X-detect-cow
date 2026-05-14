@@ -1,0 +1,11 @@
+{
+  "name": "x-keyword-notifier",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser extension that notifies you when a configured keyword is typed into the X post composer.",
+  "scripts": {
+    "check": "node scripts/check.js",
+    "package": "npm run check && rm -rf dist && mkdir -p dist && zip -r dist/x-keyword-notifier.zip manifest.json background.js content.js popup.html popup.css popup.js icons README.md LICENSE PRIVACY.md"
+  },
+  "devDependencies": {}
+}
